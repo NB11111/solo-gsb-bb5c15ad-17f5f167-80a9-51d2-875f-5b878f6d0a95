@@ -304,6 +304,76 @@ def test_zero_max_gap_keeps_zero_width_duplicates_only(client):
 
 
 # ---------------------------------------------------------------------------
+# max_gap_seconds：亚微秒阈值按原始十进制值精确比较，禁止四舍五入
+# ---------------------------------------------------------------------------
+
+def _us_pkg(seq, value, us, base="2026-09-23T08:00:00"):
+    """一条读数、时间戳带 6 位小数微秒的已提交包（value=20、单位 C）。"""
+    return pkg(seq, str(seq), [
+        m(value, ts=f"{base}.{us:06d}Z"),
+    ])
+
+
+_US_WINDOW = {
+    "from": "2026-09-23T08:00:00.000000Z",
+    "to": "2026-09-23T08:00:00.000003Z",
+}
+
+
+def test_submicrosecond_gap_limit_not_rounded_up(client):
+    # 回归用例：两条读数相隔 2 微秒，上限 0.0000015 秒（精确 1.5 微秒）。
+    # 旧实现 round(0.0000015*1e6) 受二进制浮点表示影响得到 2，把 2 微秒
+    # 间隔误判为合格；实际整数微秒差 2 > 十进制 1.5，整段须整体不计，
+    # 暴露秒数与面积都必须为零。
+    client.post("/api/v1/packages", json=_us_pkg(1, 20.0, 0))
+    client.post("/api/v1/packages", json=_us_pkg(2, 20.0, 2))
+    body = exposure(client, threshold=10, max_gap_seconds=0.0000015,
+                    **_US_WINDOW).json()
+    assert body["sample_count"] == 2
+    assert body["segment_count"] == 0
+    assert body["exposure_seconds"] == 0.0
+    assert body["exposure_area"] == 0.0
+
+
+def test_gap_below_submicrosecond_limit_is_kept(client):
+    # 同一上限 0.0000015 秒：相隔 1 微秒严格小于 1.5 微秒，线段合格。
+    # 恒为 20、阈值 10：暴露 1 微秒 = 0.000001 秒，面积 10·1e-6 = 0.00001。
+    client.post("/api/v1/packages", json=_us_pkg(1, 20.0, 0))
+    client.post("/api/v1/packages", json=_us_pkg(2, 20.0, 1))
+    body = exposure(client, threshold=10, max_gap_seconds=0.0000015,
+                    **_US_WINDOW).json()
+    assert body["segment_count"] == 1
+    assert body["exposure_seconds"] == pytest.approx(0.000001)
+    assert body["exposure_area"] == pytest.approx(0.00001)
+
+
+def test_gap_equal_to_integer_microsecond_limit_is_kept(client):
+    # 间隔恰等于整数微秒上限（2 微秒 == 0.000002 秒）：边界合格，仍参与。
+    # 恒为 20、阈值 10：暴露 2 微秒 = 0.000002 秒，面积 10·2e-6 = 0.00002。
+    client.post("/api/v1/packages", json=_us_pkg(1, 20.0, 0))
+    client.post("/api/v1/packages", json=_us_pkg(2, 20.0, 2))
+    body = exposure(client, threshold=10, max_gap_seconds=0.000002,
+                    **_US_WINDOW).json()
+    assert body["segment_count"] == 1
+    assert body["exposure_seconds"] == pytest.approx(0.000002)
+    assert body["exposure_area"] == pytest.approx(0.00002)
+
+
+def test_submicrosecond_overlimit_break_keeps_neighbor_segments(client):
+    # 三条读数：0→1 微秒合格（1 <= 1.5），1→3 微秒超限（2 > 1.5）。
+    # 超限的只是后一整段；前段照常积分，断裂不波及相邻的合格段。
+    client.post("/api/v1/packages", json=_us_pkg(1, 20.0, 0))
+    client.post("/api/v1/packages", json=_us_pkg(2, 20.0, 1))
+    client.post("/api/v1/packages", json=_us_pkg(3, 20.0, 3))
+    body = exposure(client, threshold=10, max_gap_seconds=0.0000015,
+                    **_US_WINDOW).json()
+    assert body["sample_count"] == 3
+    assert body["segment_count"] == 1
+    assert body["exposure_seconds"] == pytest.approx(0.000001)
+    assert body["exposure_area"] == pytest.approx(0.00001)
+
+
+# ---------------------------------------------------------------------------
 # 同一时刻保留最后一条
 # ---------------------------------------------------------------------------
 

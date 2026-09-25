@@ -447,7 +447,10 @@ def get_metrics_exposure(
     to: datetime = Query(description="UTC 积分范围终点（不含），ISO 8601"),
     threshold: float = Query(description="超阈判定阈值：对 max(value-threshold, 0) 积分"),
     max_gap_seconds: float = Query(
-        ge=0, description="相邻读数最大允许间隔（秒）；间隔严格超过该值的整段不参与"
+        ge=0,
+        description="相邻读数最大允许间隔（秒）；间隔严格超过该值的整段不参与。"
+        "按请求原始十进制值精确比较（不舍入）：0.0000015 即 1.5 微秒，"
+        "2 微秒间隔严格超限；间隔恰等于上限仍允许积分",
     ),
 ):
     """超阈暴露量积分（纯只读，不改写任何已存数据）。
@@ -455,9 +458,11 @@ def get_metrics_exposure(
     仅查询该设备已提交包中的同指标、同单位测量：每条测量优先用 ts，
     否则用包 sent_at，均无则丢弃；按 (时间, 包序号, 包内位置) 排序，
     同一时刻只保留最后一条。相邻读数间线性插值，间隔严格超过
-    max_gap_seconds 的整段不计；按 [from, to) 裁剪线段并切分阈值交点，
-    对 max(value-threshold, 0) 积分，返回超阈秒数与超阈面积。
-    范围外的相邻读数仍参与边界插值；不足两条读数时结果为零。
+    max_gap_seconds 的整段不计；间隔资格以实际整数微秒差与请求十进制
+    秒值直接比较（Decimal，不四舍五入），故 0.0000015 秒的上限不会
+    误放进 2 微秒间隔，间隔恰等于上限仍合格。按 [from, to) 裁剪线段并
+    切分阈值交点，对 max(value-threshold, 0) 积分，返回超阈秒数与超阈
+    面积。范围外的相邻读数仍参与边界插值；不足两条读数时结果为零。
     """
     with db.get_conn() as conn:
         dev = conn.execute(
