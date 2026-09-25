@@ -284,6 +284,35 @@ def test_gap_boundary_inclusive(client):
     assert body["exposure_seconds"] == pytest.approx(60.0)
 
 
+def test_max_gap_microseconds_not_rounded_up(client):
+    # 两条已提交读数相隔 2 微秒（均为 2、阈值 1）：
+    # max_gap_seconds=0.0000015（1.5µs）不得被四舍五入成 2µs 而放行，
+    # 该线段整体不计，暴露秒数与面积均为 0；
+    # =0.000002（间隔恰等于上限）时边界合格，整段积分：
+    # 2µs = 0.000002 秒，超阈幅度恒为 1，面积同为 0.000002。
+    client.post("/api/v1/packages", json=pkg(1, "1", [
+        m(2.0, ts="2026-09-23T08:00:00.000000Z"),
+    ]))
+    client.post("/api/v1/packages", json=pkg(2, "2", [
+        m(2.0, ts="2026-09-23T08:00:00.000002Z"),
+    ]))
+    window = {
+        "from": "2026-09-23T08:00:00.000000Z",
+        "to": "2026-09-23T08:00:00.000003Z",
+    }
+    body = exposure(client, threshold=1, max_gap_seconds=0.0000015,
+                    **window).json()
+    assert body["sample_count"] == 2
+    assert body["segment_count"] == 0
+    assert body["exposure_seconds"] == 0.0
+    assert body["exposure_area"] == 0.0
+    body = exposure(client, threshold=1, max_gap_seconds=0.000002,
+                    **window).json()
+    assert body["segment_count"] == 1
+    assert body["exposure_seconds"] == pytest.approx(0.000002)
+    assert body["exposure_area"] == pytest.approx(0.000002)
+
+
 def test_gap_does_not_invalidate_points_for_other_segments(client):
     # 0→10 超限，但 10→20、20→30 正常：后两段照常积分
     for p in readings_at([(20.0, 0), (20.0, 100), (20.0, 110), (20.0, 120)]):

@@ -569,7 +569,8 @@ class ExposureResponse(BaseModel):
     to: datetime = Field(description="积分范围终点（不含）")
     threshold: float = Field(description="超阈判定阈值：对 max(value-threshold, 0) 积分")
     max_gap_seconds: float = Field(
-        description="相邻读数最大允许间隔（秒）；间隔严格超过该值时整段插值不计"
+        description="相邻读数最大允许间隔（秒，按请求十进制值精确比较，不做"
+        "四舍五入）；实际整数微秒间隔严格超过该值时整段插值不计，等于上限仍积分"
     )
     sample_count: int = Field(
         description="指标相符、单位相符且有有效时间的读数条数（同一时刻去重后）"

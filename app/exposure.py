@@ -14,27 +14,44 @@
 - 不按 [from, to) 预过滤：范围外的相邻读数仍参与边界插值。
 
 插值与积分：
-- 相邻候选读数之间按时间线性插值；相邻间隔严格大于 max_gap_seconds 时
-  该整段不参与（断裂），但断裂两侧的读数仍各自与更远的相邻读数配段；
+- 相邻候选读数之间按时间线性插值；相邻间隔（实际整数微秒差）严格大于
+  max_gap_seconds（按请求十进制秒值精确换算的微秒）时该整段不参与
+  （断裂），等于上限仍允许积分；断裂两侧的读数仍各自与更远的相邻读数
+  配段。间隔资格以整数微秒差与请求十进制秒值直接比较，绝不把上限四舍
+  五入成整数微秒——max_gap_seconds=0.0000015（1.5 微秒）不会放进
+  2 微秒的间隔；
 - 每条有效线段先与 [from, to) 求交裁剪，再按阈值交点切分为若干子段，
   对严格高于阈值的子段积分：暴露秒数累加子段时长，暴露面积按梯形累加
   ∫ max(v(t)-threshold, 0) dt；恰在阈值上的部分贡献为零。
 
-时间比较一律使用整数微秒运算，避免浮点秒比较误差；线段内的裁剪、
-阈值交点切分与梯形积分使用相对首端点的微秒坐标，避免 UTC 纪元绝对
-微秒（远期时间量级达 1e16）转浮点后丢失微秒分辨率。不足两条读数时
-无法构成任何线段，暴露秒数与面积均为 0。
+时间比较一律使用整数微秒运算，避免浮点秒比较误差；间隔资格以相邻读数
+的实际整数微秒差与请求 max_gap_seconds 的十进制秒值精确换算后的微秒
+直接比较（Decimal，不做四舍五入）；线段内的裁剪、阈值交点切分与梯形
+积分使用相对首端点的微秒坐标，避免 UTC 纪元绝对微秒（远期时间量级达
+1e16）转浮点后丢失微秒分辨率。不足两条读数时无法构成任何线段，暴露秒
+数与面积均为 0。
 """
 
 import json
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import List, Optional
 
 from .schemas import ExposureResponse
 
 _US_PER_SECOND = 1_000_000
+
+
+def _gap_limit_us(max_gap_seconds: float) -> Decimal:
+    """把请求的间隔上限（十进制秒）精确换算为微秒，不做任何舍入。
+
+    str() 给出能往返还原该浮点数的最短十进制串，即请求中给出的原始
+    十进制秒值（如 0.0000015）；与整数微秒间隔直接比较时 Decimal
+    精确参与，1.5 微秒的上限不会被四舍五入成 2 微秒。
+    """
+    return Decimal(str(max_gap_seconds)) * _US_PER_SECOND
 
 
 class ExposureError(ValueError):
@@ -203,14 +220,16 @@ def compute_exposure(
 
     lo_us = _to_us(from_)
     hi_us = _to_us(to)
-    max_gap_us = round(max_gap_seconds * _US_PER_SECOND)
+    # 间隔上限按请求的原始十进制秒值精确换算，不四舍五入成整数微秒：
+    # 实际整数微秒差严格大于该值才断裂，等于上限的线段仍参与积分
+    max_gap_us = _gap_limit_us(max_gap_seconds)
 
     over_us = 0.0
     area_us = 0.0
     segment_count = 0
     for prev, cur in zip(points, points[1:]):
-        if cur.time_us - prev.time_us > max_gap_us:
-            continue  # 间隔超限：该整段插值不计
+        if Decimal(cur.time_us - prev.time_us) > max_gap_us:
+            continue  # 间隔严格超限：该整段插值不计（等于上限仍参与）
         if cur.time_us <= lo_us or prev.time_us >= hi_us:
             continue  # 与 [from, to) 无交集
         seg_us, seg_area = _integrate_segment(

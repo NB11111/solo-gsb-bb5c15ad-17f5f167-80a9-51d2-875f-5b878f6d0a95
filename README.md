@@ -845,6 +845,11 @@ curl 'localhost:8000/api/v1/devices/oven-7/metrics/warmup-release?metric=tempera
 | `threshold` | 是 | 超阈判定阈值：对 `max(value-threshold, 0)` 积分（可为负数） |
 | `max_gap_seconds` | 是 | 相邻读数最大允许间隔（秒），`>= 0`（边界合格：间隔**严格大于**该值才断） |
 
+> 间隔资格按**实际整数微秒差**与请求的**十进制秒值精确换算后的微秒**
+> 直接比较（Decimal），**不做四舍五入**：例如 `max_gap_seconds=0.0000015`
+> （1.5 微秒）不会被舍入成 2 微秒，两条相隔 2 微秒的读数之间整段不计；
+> 而间隔**恰等于**上限（如 `0.000002`）仍允许积分。
+
 读数选择与排序：
 
 - 仅分析**已提交**包（缓冲包不参与）；读数单位须与 `unit` 逐字相同，
@@ -866,7 +871,10 @@ curl 'localhost:8000/api/v1/devices/oven-7/metrics/warmup-release?metric=tempera
 - 对严格高于阈值的子段积分：`exposure_seconds` 累加子段时长，
   `exposure_area` 按梯形法累加 ∫ max(v(t) − threshold, 0) dt；
   恰在阈值上的部分贡献为零；
-- 时间全程使用整数微秒运算。`sample_count` 为去重后纳入的读数条数，
+- 时间全程使用整数微秒运算：间隔比较用实际整数微秒差与请求十进制秒值
+  精确换算的微秒直接比较（不四舍五入），线段内的裁剪、交点切分与梯形
+  积分使用相对线段首端点的微秒坐标，远期时间（如 2300 年）也不丢失
+  微秒分辨率。`sample_count` 为去重后纳入的读数条数，
   `segment_count` 为实际与 `[from, to)` 相交且未因间隔超限丢弃的线段数。
 
 样本不足（不足两条有效读数，无法构成任何插值线段）时 HTTP 仍为 `200`，
